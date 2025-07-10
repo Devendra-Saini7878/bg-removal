@@ -1,14 +1,11 @@
 import { Webhook } from "svix";
-import userModel from "../models/userModel.js";
 import Razorpay from "razorpay";
+import userModel from "../models/userModel.js";
 import transactionModel from "../models/transactionModel.js";
-//api controller function to manage clerk user with database
-//http://localhost:4000/api/user/webhooks
+import crypto from "crypto";
 
 const clerkwebhooks = async (req, res) => {
   try {
-    // res.send("Webhook received successfully");
-    // return;
     const whook = new Webhook(process.env.CLERK_WEBHOOK_SECRET);
     await whook.verify(JSON.stringify(req.body), {
       "svix-id": req.headers["svix-id"],
@@ -17,72 +14,44 @@ const clerkwebhooks = async (req, res) => {
     });
 
     const { data, type } = req.body;
-    console.log(data);
 
     switch (type) {
-      case "user.created": {
-        const userData = {
+      case "user.created":
+        await userModel.create({
           clerkId: data.id,
           email: data.email_addresses[0].email_address,
           firstName: data.first_name,
           lastName: data.last_name,
           photo: data.image_url,
-        };
-
-        await userModel.create(userData);
-        res.json({});
-
-        break;
-      }
-      case "user.updated": {
-        const userData = {
-          email: data.email_addresses[0].email_address,
-          firstName: data.first_name,
-          lastName: data.last_name,
-          photo: data.image_url,
-        };
-
-        await userModel.findOneAndUpdate(
-          {
-            clerkId: data.id,
-          },
-          userData
-        );
-
-        res.json({});
-        // Handle user updated logic here
-        break;
-      }
-      case "user.deleted": {
-        await userModel.findOneAndDelete({
-          clerkId: data.id,
         });
-        // Handle user deleted logic here
         break;
-      }
-      default: {
+      case "user.updated":
+        await userModel.findOneAndUpdate({ clerkId: data.id }, {
+          email: data.email_addresses[0].email_address,
+          firstName: data.first_name,
+          lastName: data.last_name,
+          photo: data.image_url,
+        });
         break;
-      }
+      case "user.deleted":
+        await userModel.findOneAndDelete({ clerkId: data.id });
+        break;
+      default:
+        break;
     }
+
+    res.json({});
   } catch (error) {
     console.error("Error in clerkwebhooks:", error);
     res.status(500).json({ success: false, message: "Internal Server Error" });
   }
 };
 
-//API controller function to get user available credits
-
 const userCredits = async (req, res) => {
   try {
     const { clerkId } = req.user;
-    console.log(clerkId);
-    const userData = await userModel.findOne({ clerkId });
-    console.log(userData);
-
-    res.json({
-      success: true,
-      credits: userData.creditBalance,
-    });
+    const user = await userModel.findOne({ clerkId });
+    res.json({ success: true, credits: user.creditBalance });
   } catch (error) {
     console.error("Error in userCredits:", error);
     res.status(500).json({ success: false, message: "Internal Server Error" });
@@ -94,96 +63,63 @@ const razorpayInstance = new Razorpay({
   key_secret: process.env.RAZORPAY_KEY_SECRET,
 });
 
-//API controller function to buy credits
 const paymentRazorpay = async (req, res) => {
   try {
     const { clerkId } = req.user;
     const { planId } = req.body;
-    const userData = await userModel.findOne({ clerkId });
-    if (!userData || !planId) {
-      return res
-        .status(400)
-        .json({ success: false, message: "Invalid credentials" });
-    }
-    let credits, plan, amount, date
+    const user = await userModel.findOne({ clerkId });
+
+    let credits, plan, amount;
     switch (planId) {
-      case 'Basic':
-        plan = "Basic";
-        credits=100
-        amount=10
-        break;
-        case 'Advanced':
-        plan = "Advanced";
-        credits=500 
-        amount=50
-        break;
-        case 'Business':
-        plan = "Business";
-        credits=5000
-        amount=250
-        break;
+      case 'Basic': credits = 100; amount = 10; plan = 'Basic'; break;
+      case 'Advanced': credits = 500; amount = 50; plan = 'Advanced'; break;
+      case 'Business': credits = 5000; amount = 250; plan = 'Business'; break;
       default:
-        break;
+        return res.status(400).json({ success: false, message: "Invalid plan ID." });
     }
-        date = Date.now();
 
-        const transactionData = {
-            clerkId,
-            plan,
-            credits,
-            amount,
-            date,
-        }
-        const newTransaction = await transactionModel.create(transactionData);
+    const transaction = await transactionModel.create({ clerkId, credits, plan, amount, date: Date.now() });
+    const order = await razorpayInstance.orders.create({
+      amount: amount * 100,
+      currency: process.env.CURRENCY || "INR",
+      receipt: transaction._id.toString(),
+    });
 
-      const options = {
-        amount: amount * 100,
-        currency: process.env.CURRENCY || "INR",
-        receipt: newTransaction._id,
-      }
-
-      try {
-        const order = await razorpayInstance.orders.create(options);
-        res.json({ success: true, order });
-      } catch (err) {
-        console.error("Error in creating Razorpay order:", err);
-        return res.status(500).json({ success: false, message: "Internal Server Error" });
-      }
-
-
+    res.json({ success: true, order });
   } catch (error) {
     console.error("Error in paymentRazorpay:", error);
     res.status(500).json({ success: false, message: "Internal Server Error" });
   }
 };
 
-//API controller function to verify payment
-const verifyRazorpay = async (req,res)=>{
-    try {
-           const {razorpay_order_id} = req.body;
-           const orderInfo = await razorpayInstance.orders.fetch(razorpay_order_id);
-           if(orderInfo.status === "paid"){
-            const transactionData =  await transactionModel.findById(orderInfo.receipt);
-            if(transactionData.payment){
-                return res.status(400).json({success:false,message:"Transaction not found"});
-            }
-            const userData = await userModel.findOne({clerkId:transactionData.clerkId});
-            const creditBalance= userData.creditBalance + transactionData.credits;
-            await userModel.findOneAndUpdate(userData._id,{creditBalance});
+const verifyRazorpay = async (req, res) => {
+  try {
+    const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
 
+    const expectedSignature = crypto
+      .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
+      .update(`${razorpay_order_id}|${razorpay_payment_id}`)
+      .digest("hex");
 
-            //making transaction as paid
-            await transactionModel.findByIdAndUpdate(transactionData._id,{payment:true});
-            res.json({success:true,message:"Payment verified successfully"});
-           }
-
-
-    } catch (error) {
-        console.error("Error in verifyRazorpay:", error);
-        res.status(500).json({ success: false, message: "Internal Server Error" });
-        
+    if (expectedSignature !== razorpay_signature) {
+      return res.status(400).json({ success: false, message: "Invalid signature." });
     }
-}
 
+    const transaction = await transactionModel.findById(razorpay_order_id);
+    if (!transaction || transaction.payment) {
+      return res.status(400).json({ success: false, message: "Invalid or already verified transaction." });
+    }
 
-export { clerkwebhooks, userCredits ,paymentRazorpay , verifyRazorpay};
+    const user = await userModel.findOne({ clerkId: transaction.clerkId });
+    await userModel.findByIdAndUpdate(user._id, { creditBalance: user.creditBalance + transaction.credits });
+    await transactionModel.findByIdAndUpdate(transaction._id, { payment: true });
+
+    res.json({ success: true, message: "Payment verified successfully" });
+  } catch (error) {
+    console.error("Error in verifyRazorpay:", error);
+    res.status(500).json({ success: false, message: "Internal Server Error" });
+  }
+};
+
+export { clerkwebhooks, userCredits, paymentRazorpay, verifyRazorpay };
+

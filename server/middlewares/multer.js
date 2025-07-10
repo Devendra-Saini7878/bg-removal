@@ -1,13 +1,21 @@
 import multer from "multer";
+import fs from "fs";
 
-
-//multer middleware for parsing form data
 const storage = multer.diskStorage({
-    filename: (re, file, callback) => {
-      callback(null,`${Date.now()}-${file.originalname}`);
-    }
-})
+  destination: function (req, file, cb) {
+    const uploadDir = 'uploads';
+    if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir);
+    cb(null, uploadDir);
+  },
+  filename: function (req, file, cb) {
+    cb(null, `${Date.now()}-${file.originalname}`);
+  }
+});
 
-const upload = multer({storage});
+const fileFilter = (req, file, cb) => {
+  if (file.mimetype.startsWith("image/")) cb(null, true);
+  else cb(new Error("Only image files are allowed!"), false);
+};
 
+const upload = multer({ storage, fileFilter });
 export default upload;
