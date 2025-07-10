@@ -15,7 +15,10 @@ await connectDB()
 
 //Intialize
 app.use(express.json())
-app.use(cors())
+app.use(cors({
+  origin: 'http://localhost:5173', // or '*' for all origins (not recommended for production)
+  credentials: true, // if you use cookies or authentication
+}));
 
 //API Route
 app.get('/',(req,res)=> res.send("API working"))
