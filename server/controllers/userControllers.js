@@ -75,7 +75,9 @@ const clerkwebhooks = async (req, res) => {
 const userCredits = async (req, res) => {
   try {
     const { clerkId } = req.user;
+    console.log(clerkId);
     const userData = await userModel.findOne({ clerkId });
+    console.log(userData);
 
     res.json({
       success: true,
@@ -116,7 +118,7 @@ const paymentRazorpay = async (req, res) => {
         amount=50
         break;
         case 'Business':
-        plan = "Basic";
+        plan = "Business";
         credits=5000
         amount=250
         break;
